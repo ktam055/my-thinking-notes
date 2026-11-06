@@ -128,6 +128,14 @@ export async function deleteScript(id) {
 export async function callAI(task, payload) {
   if (!isCloud) throw new Error("AI機能はクラウド設定後に使えます");
   const { data, error } = await supabase.functions.invoke("ai", { body: { task, ...payload } });
-  if (error) throw error;
+  if (error) {
+    // サーバーが返したエラー文を取り出して表示する
+    let msg = error.message;
+    try {
+      const body = await error.context?.json();
+      if (body?.error) msg = body.error;
+    } catch { /* 本文なし */ }
+    throw new Error(msg);
+  }
   return data;
 }

@@ -132,17 +132,34 @@ const STYLES = {
 };
 
 // ---------------- ニュース取得（RSS の見出しのみ使用） ----------------
+// 1つが取れなくても他で補えるよう複数を使う
 const NEWS_FEEDS = [
   "https://www3.nhk.or.jp/rss/news/cat0.xml",
   "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
+  "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
+  "https://news.yahoo.co.jp/rss/topics/domestic.xml",
+  "https://news.yahoo.co.jp/rss/topics/it.xml",
+  "https://news.yahoo.co.jp/rss/topics/entertainment.xml",
 ];
+
+const feedErrors: string[] = [];
+
+async function fetchFeed(url: string): Promise<string> {
+  const r = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; MyThinkingNotes/1.0)", Accept: "application/rss+xml, application/xml, text/xml" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`${new URL(url).hostname} ${r.status}`);
+  return r.text();
+}
 
 async function fetchNewsTitles(): Promise<string[]> {
   const since = Date.now() - 48 * 3600e3; // 昨日と今日
-  const results = await Promise.allSettled(NEWS_FEEDS.map((u) => fetch(u).then((r) => r.text())));
+  feedErrors.length = 0;
+  const results = await Promise.allSettled(NEWS_FEEDS.map(fetchFeed));
   const titles = new Set<string>();
   for (const r of results) {
-    if (r.status !== "fulfilled") continue;
+    if (r.status !== "fulfilled") { feedErrors.push(String((r.reason as Error)?.message ?? r.reason)); continue; }
     for (const item of r.value.match(/<item[\s\S]*?<\/item>/g) ?? []) {
       const t = item.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1];
       const d = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1];
@@ -275,7 +292,9 @@ Deno.serve(async (req) => {
       // アイデア出し：昨日・今日のニュースから話題のキーワード10個
       case "news": {
         const titles = await fetchNewsTitles();
-        if (!titles.length) return json({ error: "ニュースを取得できませんでした" }, 502);
+        if (!titles.length) {
+          return json({ error: "ニュースを取得できませんでした（" + (feedErrors.join(", ") || "見出し0件") + "）" }, 502);
+        }
         const system =
           "ニュースの見出し一覧から、いま話題になっているキーワードを10個選びます。" +
           "同じ話題は1つにまとめ、ジャンルが偏らないようにしてください。各キーワードに15文字以内の短い説明を付けます。" +
