@@ -30,7 +30,8 @@ export async function init() {
 export async function signIn(email) {
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: location.origin + location.pathname },
+    // 新規登録は停止しているので、既存ユーザーのログインだけを行う
+    options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: false },
   });
   if (error) throw error;
 }

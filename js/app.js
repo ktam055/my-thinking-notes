@@ -286,12 +286,23 @@ function renderLogin() {
       <p>メールアドレスにログイン用リンクを送ります。</p>
       <input id="email" type="email" placeholder="you@example.com" autocomplete="email">
       <button id="send" class="primary" style="margin-top:10px">ログインリンクを送る</button>
+      <p id="login-msg" class="hint"></p>
     </div>`;
+  const msg = view.querySelector("#login-msg");
   view.querySelector("#send").onclick = async () => {
     const email = view.querySelector("#email").value.trim();
     if (!email) return;
-    try { await store.signIn(email); toast("メールを確認してください"); }
-    catch (e) { toast("送信に失敗: " + e.message); }
+    msg.textContent = "送信中…";
+    try {
+      await store.signIn(email);
+      msg.textContent = "ログイン用のメールを送りました。届いたリンクをこのブラウザで開いてください。";
+    } catch (e) {
+      const m = e.message || "";
+      msg.textContent =
+        /signup|not allowed/i.test(m) ? "このメールアドレスは登録されていません。登録済みのアドレスを入力してください。" :
+        /rate limit|seconds/i.test(m) ? "送信回数の上限に達しました。しばらく待ってからもう一度お試しください。" :
+        "送信に失敗しました: " + m;
+    }
   };
 }
 
