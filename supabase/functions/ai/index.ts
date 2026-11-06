@@ -120,10 +120,26 @@ const todayRangeJST = () => {
 // ---------------- 台本の長さ・種類 ----------------
 const LENGTHS = {
   "10s": { label: "10秒", chars: 40, maxTokens: 2000, effort: "low" as Effort },
+  "30s": { label: "30秒", chars: 150, maxTokens: 3000, effort: "low" as Effort },
   "1m": { label: "1分", chars: 300, maxTokens: 4000, effort: "low" as Effort },
   "5m": { label: "5分", chars: 1500, maxTokens: 10000, effort: "medium" as Effort },
   "long": { label: "15分程度の長尺", chars: 4500, maxTokens: 20000, effort: "medium" as Effort },
 };
+// 秒数指定（例 "45s"）。話す速さは1秒あたり約5文字
+function lengthOf(key: unknown) {
+  const preset = LENGTHS[key as keyof typeof LENGTHS];
+  if (preset) return preset;
+  const m = String(key ?? "").match(/^(\d{1,4})s$/);
+  if (!m) return LENGTHS["1m"];
+  const sec = Math.min(Math.max(Number(m[1]), 5), 3600);
+  const chars = sec * 5;
+  const label = sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60 ? (sec % 60) + "秒" : ""}` : `${sec}秒`;
+  return {
+    label, chars,
+    maxTokens: Math.min(Math.max(2000, chars * 4), 30000),
+    effort: (sec > 120 ? "medium" : "low") as Effort,
+  };
+}
 const STYLES = {
   chat: "一人で話す雑談トークの台本（話し言葉、話題の転換や小ネタを入れる）",
   video: "動画のシナリオ（シーンごとに【映像】と【ナレーション】を書き分ける）",
@@ -312,7 +328,7 @@ Deno.serve(async (req) => {
       case "script": {
         const keywords = strList(body.keywords, 10);
         if (!keywords.length) return json({ error: "キーワードを選んでください" }, 400);
-        const len = LENGTHS[body.length as keyof typeof LENGTHS] ?? LENGTHS["1m"];
+        const len = lengthOf(body.length);
         const style = STYLES[body.style as keyof typeof STYLES] ?? STYLES.chat;
         const system =
           "あなたは YouTube などの動画や配信の構成作家です。ユーザーのキーワードから、" +

@@ -527,7 +527,13 @@ async function renderRecall() {
 }
 
 // ---------------- 台本作成画面 ----------------
-const LENGTH_LABEL = { "10s": "10秒", "1m": "1分", "5m": "5分", long: "長尺（15分）" };
+const LENGTH_LABEL = { "10s": "10秒", "30s": "30秒", "1m": "1分", "5m": "5分", long: "長尺（15分）", custom: "秒数を指定…" };
+const lengthLabel = (k) => {
+  if (LENGTH_LABEL[k]) return LENGTH_LABEL[k];
+  const sec = Number(String(k).replace(/s$/, ""));
+  if (!sec) return "";
+  return sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60 ? (sec % 60) + "秒" : ""}` : `${sec}秒`;
+};
 const STYLE_LABEL = { chat: "雑談トーク", video: "動画シナリオ", short: "ショート動画", duo: "二人の掛け合い" };
 
 async function renderScript() {
@@ -539,7 +545,8 @@ async function renderScript() {
       <input id="kws" placeholder="例：猫, 雨の日, AI">
       <div id="cands" class="chips" style="margin-top:8px"></div>
       <div class="row" style="margin-top:4px">
-        <div class="grow"><label>長さ</label><select id="len">${opts(LENGTH_LABEL)}</select></div>
+        <div class="grow"><label>長さ</label><select id="len">${opts(LENGTH_LABEL)}</select>
+          <input id="sec" type="number" min="5" max="3600" step="5" placeholder="秒数（例：45）" style="margin-top:6px" hidden></div>
         <div class="grow"><label>種類</label><select id="style">${opts(STYLE_LABEL)}</select></div>
       </div>
       <label>補足・要望（任意）</label>
@@ -554,7 +561,15 @@ async function renderScript() {
     <div id="history"></div>`;
 
   const $ = (s) => view.querySelector(s);
-  try { $("#len").value = localStorage.getItem("mtn.len") || "1m"; $("#style").value = localStorage.getItem("mtn.style") || "chat"; } catch {}
+  try {
+    $("#len").value = localStorage.getItem("mtn.len") || "1m";
+    $("#style").value = localStorage.getItem("mtn.style") || "chat";
+    $("#sec").value = localStorage.getItem("mtn.sec") || "45";
+  } catch {}
+  if (!$("#len").value) $("#len").value = "1m";
+  const syncSec = () => { $("#sec").hidden = $("#len").value !== "custom"; };
+  $("#len").onchange = syncSec;
+  syncSec();
 
   // 候補：最近のキーワードメモ（💡）と、よく使うタグ
   const memos = await store.listMemos({ limit: 300 });
@@ -579,7 +594,7 @@ async function renderScript() {
     <details class="card" data-id="${s.id || ""}" ${open ? "open" : ""}>
       <summary>
         <strong>${esc(s.title)}</strong>
-        <div class="hint">${LENGTH_LABEL[s.length] || ""}・${STYLE_LABEL[s.style] || ""}・${esc((s.keywords || []).join("、"))}${s.created_at ? "・" + fmtDay(s.created_at) : ""}</div>
+        <div class="hint">${lengthLabel(s.length)}・${STYLE_LABEL[s.style] || ""}・${esc((s.keywords || []).join("、"))}${s.created_at ? "・" + fmtDay(s.created_at) : ""}</div>
       </summary>
       <div class="script-body">${esc(s.body)}</div>
       <div class="row" style="margin-top:10px;justify-content:flex-end">
@@ -614,10 +629,17 @@ async function renderScript() {
   $("#gen").onclick = async () => {
     const keywords = currentKws();
     if (!keywords.length) { toast("キーワードを入れてください"); return; }
-    const length = $("#len").value, style = $("#style").value;
+    let length = $("#len").value;
+    const style = $("#style").value;
     try { localStorage.setItem("mtn.len", length); localStorage.setItem("mtn.style", style); } catch {}
+    if (length === "custom") {
+      const sec = Math.round(Number($("#sec").value));
+      if (!(sec >= 5 && sec <= 3600)) { toast("秒数は5〜3600で入れてください"); return; }
+      try { localStorage.setItem("mtn.sec", String(sec)); } catch {}
+      length = `${sec}s`;
+    }
     $("#gen").disabled = true;
-    $("#gen-hint").textContent = length === "long" || length === "5m" ? "作成中…（1分ほどかかります）" : "作成中…";
+    $("#gen-hint").textContent = length === "long" || length === "5m" || parseInt(length) > 120 ? "作成中…（1分ほどかかります）" : "作成中…";
     try {
       const s = await store.callAI("script", { keywords, length, style, note: $("#note").value.trim() });
       $("#out").innerHTML = scriptHTML(s, true);
