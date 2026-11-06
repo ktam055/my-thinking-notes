@@ -99,6 +99,11 @@ button:disabled { opacity: .5; cursor: default; }
 .chip { border-radius: 999px; padding: 6px 14px; font-weight: 500; }
 .chip.on { background: var(--accent); color: #fff; }
 .chip small { display: block; font-size: 11px; font-weight: 400; opacity: .8; }
+.kinds { margin-bottom: 10px; }
+.kinds .chip { padding: 4px 12px; font-size: 14px; }
+.body.secret { cursor: pointer; color: var(--muted); }
+.body.secret.shown { color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+.src-shopping, .src-todo, .src-later, .src-want, .src-secret { color: var(--accent); border-color: var(--accent); }
 .script-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 details.card > summary { cursor: pointer; list-style: none; }
 details.card > summary::-webkit-details-marker { display: none; }

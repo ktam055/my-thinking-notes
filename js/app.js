@@ -31,6 +31,23 @@ const SOURCES = {
   idea:  { icon: "💡", name: "自分のキーワード" },
   news:  { icon: "📰", name: "ニュース" },
   diary: { icon: "📝", name: "一言感想" },
+  // メモ帳用の種類（入力画面で選ぶ）
+  shopping: { icon: "🛒", name: "買い物" },
+  todo:     { icon: "✅", name: "やること" },
+  later:    { icon: "🔍", name: "あとで調べる" },
+  want:     { icon: "⭐", name: "欲しい" },
+  secret:   { icon: "🔒", name: "パスワード等" },
+};
+// 入力画面で選べる種類（memo = 普通のメモ。音声なら voice になる）
+const INPUT_KINDS = ["memo", "shopping", "todo", "later", "want", "secret"];
+// 日付の絞り込み
+const DATE_FILTERS = {
+  all:   "すべての期間",
+  today: "今日",
+  yday:  "昨日",
+  week:  "この1週間",
+  month: "この1か月",
+  day:   "日付を指定…",
 };
 // 閲覧画面の絞り込み
 const SOURCE_FILTERS = {
@@ -39,7 +56,15 @@ const SOURCE_FILTERS = {
   idea:  { name: "💡 自分のキーワード", match: (s) => s === "idea" },
   news:  { name: "📰 ニュース", match: (s) => s === "news" },
   diary: { name: "📝 一言感想", match: (s) => s === "diary" },
+  notes: { name: "📒 メモ帳（買い物〜パスワード全部）",
+           match: (s) => ["shopping", "todo", "later", "want", "secret"].includes(s) },
+  shopping: { name: "🛒 買い物", match: (s) => s === "shopping" },
+  todo:     { name: "✅ やること", match: (s) => s === "todo" },
+  later:    { name: "🔍 あとで調べる", match: (s) => s === "later" },
+  want:     { name: "⭐ 欲しい", match: (s) => s === "want" },
+  secret:   { name: "🔒 パスワード等", match: (s) => s === "secret" },
 };
+const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
 function sourceBadge(source) {
   const s = SOURCES[source] || SOURCES.text;
@@ -49,13 +74,29 @@ function sourceBadge(source) {
     : `<span class="src src-${esc(source)}">${s.icon} ${s.name}</span>`;
 }
 
+const SECRET_MASK = "••••••••　<small>（押すと表示・コピー）</small>";
 function memoHTML(m) {
   const tags = (m.tags || []).map((t) => `<span class="tag" data-tag="${esc(t)}">${esc(t)}</span>`).join("");
+  // パスワード等は伏せて表示し、押すと表示・コピーできる
+  const body = m.source === "secret"
+    ? `<div class="body secret" data-secret="${esc(m.content)}">${SECRET_MASK}</div>`
+    : `<div class="body">${esc(m.content)}</div>`;
   return `<div class="memo">
     <div class="meta">${sourceBadge(m.source)}<span>${fmtTime(m.created_at)}</span>${tags}</div>
-    <div class="body">${esc(m.content)}</div>
+    ${body}
   </div>`;
 }
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-secret]");
+  if (!el) return;
+  if (el.classList.toggle("shown")) {
+    el.textContent = el.dataset.secret;
+    try { await navigator.clipboard.writeText(el.dataset.secret); toast("表示してコピーしました"); } catch {}
+  } else {
+    el.innerHTML = SECRET_MASK;
+  }
+});
 
 function groupByDay(list) {
   const groups = new Map();
@@ -71,6 +112,10 @@ function groupByDay(list) {
 async function renderInput() {
   view.innerHTML = `
     <div class="card">
+      <div id="kinds" class="chips kinds">${INPUT_KINDS.map((k) => {
+        const s = k === "memo" ? { icon: "⌨️", name: "メモ" } : SOURCES[k];
+        return `<button class="chip${k === "memo" ? " on" : ""}" data-kind="${k}">${s.icon} ${s.name}</button>`;
+      }).join("")}</div>
       <textarea id="memo-text" placeholder="思いついたこと、見聞きしたこと、キーワード…"></textarea>
       <div class="row" style="margin-top:10px">
         <button id="mic" class="mic" title="音声入力">🎤</button>
@@ -130,6 +175,22 @@ async function renderInput() {
   const hint = view.querySelector("#mic-hint");
   const saveBtn = view.querySelector("#save");
   let usedVoice = false;
+  let kind = "memo";
+  const kindsEl = view.querySelector("#kinds");
+  const PLACEHOLDER = {
+    memo: "思いついたこと、見聞きしたこと、キーワード…",
+    shopping: "買うもの（例：牛乳、単3電池）",
+    todo: "やること",
+    later: "あとで調べたいこと",
+    want: "欲しいもの・気になった商品",
+    secret: "パスワードなど（一覧では伏せて表示。AIには送りません）",
+  };
+  const setKind = (k) => {
+    kind = k;
+    kindsEl.querySelectorAll("[data-kind]").forEach((b) => b.classList.toggle("on", b.dataset.kind === k));
+    ta.placeholder = PLACEHOLDER[k];
+  };
+  kindsEl.onclick = (e) => { const b = e.target.closest("[data-kind]"); if (b) { setKind(b.dataset.kind); ta.focus(); } };
 
   const rec = createRecognizer({
     onText: (finalText, interim) => {
@@ -157,13 +218,15 @@ async function renderInput() {
     saveBtn.disabled = true;
     try {
       rec?.stop();
-      const memo = await store.addMemo(text, usedVoice ? "voice" : "text");
+      const source = kind === "memo" ? (usedVoice ? "voice" : "text") : kind;
+      const memo = await store.addMemo(text, source);
       ta.value = "";
       usedVoice = false;
-      toast("追加しました");
+      toast(`${SOURCES[source].icon} 追加しました`);
+      setKind("memo");
       loadToday();
-      // バックグラウンドでタグ付け（失敗しても無視）
-      if (store.isCloud && settings?.auto_tag) {
+      // バックグラウンドでタグ付け（失敗しても無視。パスワード等はAIに送らない）
+      if (store.isCloud && settings?.auto_tag && source !== "secret") {
         store.callAI("tag", { memo_id: memo.id }).then(loadToday).catch(() => {});
       }
     } catch (e) {
@@ -202,9 +265,15 @@ async function renderList() {
           <option value="tag">タグ別</option>
         </select>
       </div>
-      <select id="src" style="margin-top:10px">
-        ${Object.entries(SOURCE_FILTERS).map(([v, f]) => `<option value="${v}">${f.name}</option>`).join("")}
-      </select>
+      <div class="row" style="margin-top:10px">
+        <select id="src" class="grow">
+          ${Object.entries(SOURCE_FILTERS).map(([v, f]) => `<option value="${v}">${f.name}</option>`).join("")}
+        </select>
+        <select id="when" style="width:auto">
+          ${Object.entries(DATE_FILTERS).map(([v, n]) => `<option value="${v}">${n}</option>`).join("")}
+        </select>
+      </div>
+      <input id="day" type="date" style="margin-top:10px" hidden>
       <div class="row" id="cat-row" style="margin-top:10px" hidden>
         <div class="grow hint" id="cat-hint"></div>
         <button id="recat">分類を更新（AI）</button>
@@ -223,6 +292,29 @@ async function renderList() {
   try { sort.value = localStorage.getItem("mtn.sort") || "date"; } catch {}
   try { srcSel.value = localStorage.getItem("mtn.src") || "all"; } catch {}
   srcSel.onchange = () => { try { localStorage.setItem("mtn.src", srcSel.value); } catch {} draw(); };
+  const whenSel = view.querySelector("#when");
+  const dayIn = view.querySelector("#day");
+  const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  dayIn.value = ymd(new Date());
+  whenSel.onchange = () => { dayIn.hidden = whenSel.value !== "day"; draw(); };
+  dayIn.onchange = draw;
+  // 日付の範囲 [from, to)
+  function dateRange() {
+    const t0 = startOfDay(new Date()), DAY = 864e5;
+    switch (whenSel.value) {
+      case "today": return [t0, new Date(+t0 + DAY)];
+      case "yday":  return [new Date(+t0 - DAY), t0];
+      case "week":  return [new Date(+t0 - 6 * DAY), null];
+      case "month": return [new Date(+t0 - 29 * DAY), null];
+      case "day": {
+        if (!dayIn.value) return [null, null];
+        const [y, mo, d] = dayIn.value.split("-").map(Number);
+        const f = new Date(y, mo - 1, d);
+        return [f, new Date(y, mo - 1, d + 1)];
+      }
+      default: return [null, null];
+    }
+  }
 
   listEl.onclick = (e) => {
     const t = e.target.closest("[data-tag]");
@@ -260,7 +352,9 @@ async function renderList() {
   function draw() {
     const kw = q.value.trim().toLowerCase();
     const srcMatch = (SOURCE_FILTERS[srcSel.value] || SOURCE_FILTERS.all).match;
-    const list = all.filter((m) => srcMatch(m.source || "text") && (!kw ||
+    const [from, to] = dateRange();
+    const list = all.filter((m) => srcMatch(m.source || "text") &&
+      (!from || new Date(m.created_at) >= from) && (!to || new Date(m.created_at) < to) && (!kw ||
       m.content.toLowerCase().includes(kw) || (m.tags || []).some((t) => t.toLowerCase().includes(kw))));
     if (!list.length) { listEl.innerHTML = `<div class="empty">メモがありません</div>`; return; }
 
@@ -368,7 +462,7 @@ async function renderRecall() {
   const $ = (s) => view.querySelector(s);
   const all = await store.listMemos();
   const today = new Date().toDateString();
-  const past = all.filter((m) => new Date(m.created_at).toDateString() !== today && m.source !== "diary");
+  const past = all.filter((m) => new Date(m.created_at).toDateString() !== today && !["diary", "secret"].includes(m.source));
   let picked = [];
 
   function shuffle() {

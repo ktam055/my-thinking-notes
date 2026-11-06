@@ -201,6 +201,7 @@ Deno.serve(async (req) => {
       case "tag": {
         const { data: memo } = await supabase.from("memos").select("*").eq("id", body.memo_id).single();
         if (!memo) return json({ error: "メモが見つかりません" }, 404);
+        if (memo.source === "secret") return json({ tags: [] });
 
         // 既存タグを渡して、表記ゆれを減らす
         const { data: recent } = await supabase.from("memos").select("tags")
@@ -220,7 +221,7 @@ Deno.serve(async (req) => {
 
       // 思い出し：メモから連想キーワードを出す
       case "associate": {
-        let q = supabase.from("memos").select("id, content, tags, created_at");
+        let q = supabase.from("memos").select("id, content, tags, created_at").neq("source", "secret");
         if (Array.isArray(body.memo_ids) && body.memo_ids.length) q = q.in("id", body.memo_ids);
         else q = q.gte("created_at", new Date(Date.now() - 7 * 86400e3).toISOString());
         const { data: memos } = await q.order("created_at", { ascending: false }).limit(30);
@@ -241,7 +242,7 @@ Deno.serve(async (req) => {
       case "oneliner": {
         const keyword = String(body.keyword ?? "").trim();
         if (!keyword) return json({ error: "キーワードがありません" }, 400);
-        const { data: today } = await supabase.from("memos").select("content")
+        const { data: today } = await supabase.from("memos").select("content").neq("source", "secret")
           .gte("created_at", todayRangeJST()).order("created_at").limit(20);
         const system =
           "あなたはユーザー本人の代わりに日報の「今日の感想」を一言で書きます。" +
@@ -255,7 +256,7 @@ Deno.serve(async (req) => {
 
       // 分類：未タグのメモにタグを付け、タグをカテゴリにまとめて保存
       case "categorize": {
-        const { data: untagged } = await supabase.from("memos").select("id, content")
+        const { data: untagged } = await supabase.from("memos").select("id, content").neq("source", "secret")
           .eq("tags", "{}").order("created_at", { ascending: false }).limit(30);
         let tagged = 0;
         if (untagged?.length) {
