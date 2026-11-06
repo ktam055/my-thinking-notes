@@ -56,9 +56,51 @@ async function renderInput() {
       </div>
     </div>
     <div class="card">
+      <div class="row">
+        <div class="grow day" style="margin:0">💡 今日の話題キーワード</div>
+        <button id="news-btn">取得</button>
+      </div>
+      <p class="hint" id="news-hint">昨日・今日のニュースから話題を10個提案します。気になるものを押すとメモに追加されます。</p>
+      <div id="news" class="chips"></div>
+    </div>
+    <div class="card">
       <div class="day" style="margin-top:0">今日のメモ</div>
       <div id="today"></div>
     </div>`;
+
+  // ---- ニュースキーワード（1日1回取得して端末に保存） ----
+  const newsEl = view.querySelector("#news");
+  const newsHint = view.querySelector("#news-hint");
+  const newsBtn = view.querySelector("#news-btn");
+  const newsKey = "mtn.news." + new Date().toDateString();
+  const drawNews = (kws) => {
+    newsEl.innerHTML = kws.map((k) =>
+      `<button class="chip" data-word="${esc(k.word)}" title="${esc(k.note)}">${esc(k.word)}<small>${esc(k.note)}</small></button>`).join("");
+  };
+  try { const c = JSON.parse(localStorage.getItem(newsKey)); if (c) { drawNews(c); newsBtn.textContent = "更新"; } } catch {}
+  newsBtn.onclick = async () => {
+    newsBtn.disabled = true;
+    newsHint.textContent = "ニュースを読んでいます…";
+    try {
+      const r = await store.callAI("news", {});
+      drawNews(r.keywords);
+      try { localStorage.setItem(newsKey, JSON.stringify(r.keywords)); } catch {}
+      newsHint.textContent = `${r.count}本の見出しから選びました。押すとメモに追加されます。`;
+      newsBtn.textContent = "更新";
+    } catch (e) {
+      newsHint.textContent = "取得できませんでした: " + e.message;
+    } finally { newsBtn.disabled = false; }
+  };
+  newsEl.onclick = async (e) => {
+    const c = e.target.closest("[data-word]");
+    if (!c || c.classList.contains("on")) return;
+    try {
+      await store.addMemo(c.dataset.word, "idea");
+      c.classList.add("on");
+      toast(`「${c.dataset.word}」を追加しました`);
+      loadToday();
+    } catch (err) { toast("保存に失敗: " + err.message); }
+  };
 
   const ta = view.querySelector("#memo-text");
   const micBtn = view.querySelector("#mic");
@@ -357,6 +399,109 @@ async function renderRecall() {
   };
 }
 
+// ---------------- 台本作成画面 ----------------
+const LENGTH_LABEL = { "10s": "10秒", "1m": "1分", "5m": "5分", long: "長尺（15分）" };
+const STYLE_LABEL = { chat: "雑談トーク", video: "動画シナリオ", short: "ショート動画", duo: "二人の掛け合い" };
+
+async function renderScript() {
+  const opts = (o) => Object.entries(o).map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  view.innerHTML = `
+    <div class="card">
+      <div class="day" style="margin-top:0">🎬 台本を作る</div>
+      <label>キーワード（カンマ区切り。下の候補を押しても入ります）</label>
+      <input id="kws" placeholder="例：猫, 雨の日, AI">
+      <div id="cands" class="chips" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:4px">
+        <div class="grow"><label>長さ</label><select id="len">${opts(LENGTH_LABEL)}</select></div>
+        <div class="grow"><label>種類</label><select id="style">${opts(STYLE_LABEL)}</select></div>
+      </div>
+      <label>補足・要望（任意）</label>
+      <input id="note" placeholder="例：猫キャラ目線で、明るく">
+      <div class="row" style="margin-top:12px;justify-content:flex-end">
+        <span class="grow hint" id="gen-hint"></span>
+        <button id="gen" class="primary">作成</button>
+      </div>
+    </div>
+    <div id="out"></div>
+    <div class="day">これまでの台本</div>
+    <div id="history"></div>`;
+
+  const $ = (s) => view.querySelector(s);
+  try { $("#len").value = localStorage.getItem("mtn.len") || "1m"; $("#style").value = localStorage.getItem("mtn.style") || "chat"; } catch {}
+
+  // 候補：最近のキーワードメモ（💡）と、よく使うタグ
+  const memos = await store.listMemos({ limit: 300 });
+  const ideas = memos.filter((m) => m.source === "idea").slice(0, 10).map((m) => m.content);
+  const tagCount = new Map();
+  for (const m of memos) for (const t of m.tags || []) tagCount.set(t, (tagCount.get(t) || 0) + 1);
+  const topTags = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([t]) => t);
+  const cands = [...new Set([...ideas, ...topTags])].slice(0, 18);
+  $("#cands").innerHTML = cands.map((k) => `<button class="chip" data-kw="${esc(k)}">${esc(k)}</button>`).join("");
+  const currentKws = () => $("#kws").value.split(/[,、]/).map((s) => s.trim()).filter(Boolean);
+  $("#cands").onclick = (e) => {
+    const c = e.target.closest("[data-kw]");
+    if (!c) return;
+    const list = currentKws();
+    const i = list.indexOf(c.dataset.kw);
+    if (i >= 0) list.splice(i, 1); else list.push(c.dataset.kw);
+    $("#kws").value = list.join(", ");
+    c.classList.toggle("on", i < 0);
+  };
+
+  const scriptHTML = (s, open) => `
+    <details class="card" data-id="${s.id || ""}" ${open ? "open" : ""}>
+      <summary>
+        <strong>${esc(s.title)}</strong>
+        <div class="hint">${LENGTH_LABEL[s.length] || ""}・${STYLE_LABEL[s.style] || ""}・${esc((s.keywords || []).join("、"))}${s.created_at ? "・" + fmtDay(s.created_at) : ""}</div>
+      </summary>
+      <div class="script-body">${esc(s.body)}</div>
+      <div class="row" style="margin-top:10px;justify-content:flex-end">
+        ${s.id ? `<button class="danger del">削除</button>` : ""}
+        <button class="copy">コピー</button>
+      </div>
+    </details>`;
+
+  async function loadHistory() {
+    try {
+      const list = await store.listScripts();
+      $("#history").innerHTML = list.length ? list.map((s) => scriptHTML(s, false)).join("") : `<div class="empty">まだありません</div>`;
+    } catch (e) {
+      $("#history").innerHTML = `<div class="empty">読み込めません: ${esc(e.message)}</div>`;
+    }
+  }
+  loadHistory();
+
+  view.onclick = async (e) => {
+    const card = e.target.closest("details");
+    if (!card) return;
+    if (e.target.classList.contains("copy")) {
+      const text = card.querySelector("strong").textContent + "\n\n" + card.querySelector(".script-body").textContent;
+      try { await navigator.clipboard.writeText(text); toast("コピーしました"); } catch { toast("コピーできませんでした"); }
+    } else if (e.target.classList.contains("del")) {
+      if (!confirm("この台本を削除しますか？")) return;
+      try { await store.deleteScript(card.dataset.id); card.remove(); toast("削除しました"); }
+      catch (err) { toast("削除に失敗: " + err.message); }
+    }
+  };
+
+  $("#gen").onclick = async () => {
+    const keywords = currentKws();
+    if (!keywords.length) { toast("キーワードを入れてください"); return; }
+    const length = $("#len").value, style = $("#style").value;
+    try { localStorage.setItem("mtn.len", length); localStorage.setItem("mtn.style", style); } catch {}
+    $("#gen").disabled = true;
+    $("#gen-hint").textContent = length === "long" || length === "5m" ? "作成中…（1分ほどかかります）" : "作成中…";
+    try {
+      const s = await store.callAI("script", { keywords, length, style, note: $("#note").value.trim() });
+      $("#out").innerHTML = scriptHTML(s, true);
+      $("#gen-hint").textContent = s.warning || "";
+      loadHistory();
+    } catch (e) {
+      $("#gen-hint").textContent = "失敗しました: " + e.message;
+    } finally { $("#gen").disabled = false; }
+  };
+}
+
 // ---------------- 設定画面 ----------------
 async function renderSettings() {
   const s = settings;
@@ -450,7 +595,7 @@ function renderLogin() {
 
 // ---------------- ルーター ----------------
 const routes = {
-  "/": renderInput, "/list": renderList, "/recall": renderRecall,
+  "/": renderInput, "/list": renderList, "/recall": renderRecall, "/script": renderScript,
   "/manage": renderManage, "/settings": renderSettings,
 };
 

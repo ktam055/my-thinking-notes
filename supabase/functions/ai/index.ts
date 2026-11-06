@@ -22,15 +22,18 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
 // ---------------- 各社 API の呼び出し（ここだけ差し替えれば別の AI に対応できる） ----------------
-interface GenArgs { model: string; system: string; prompt: string; maxTokens: number }
+type Effort = "low" | "medium" | "high";
+interface GenArgs { model: string; system: string; prompt: string; maxTokens: number; effort?: Effort }
 
-async function callClaude({ model, system, prompt, maxTokens }: GenArgs): Promise<string> {
+async function callClaude({ model, system, prompt, maxTokens, effort }: GenArgs): Promise<string> {
   const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
   const params = {
     model,
     max_tokens: maxTokens,
     system,
     messages: [{ role: "user" as const, content: prompt }],
+    // 考える深さ。軽い処理は low で速く・安く
+    output_config: { effort: effort ?? "low" },
   };
   // Haiku 以外では、安全判定で断られたときに自動で別モデルへ切り替える fallbacks を使う
   const res = model.startsWith("claude-haiku")
@@ -114,6 +117,43 @@ const todayRangeJST = () => {
   return start.toISOString();
 };
 
+// ---------------- 台本の長さ・種類 ----------------
+const LENGTHS = {
+  "10s": { label: "10秒", chars: 40, maxTokens: 2000, effort: "low" as Effort },
+  "1m": { label: "1分", chars: 300, maxTokens: 4000, effort: "low" as Effort },
+  "5m": { label: "5分", chars: 1500, maxTokens: 10000, effort: "medium" as Effort },
+  "long": { label: "15分程度の長尺", chars: 4500, maxTokens: 20000, effort: "medium" as Effort },
+};
+const STYLES = {
+  chat: "一人で話す雑談トークの台本（話し言葉、話題の転換や小ネタを入れる）",
+  video: "動画のシナリオ（シーンごとに【映像】と【ナレーション】を書き分ける）",
+  short: "ショート動画の台本（冒頭1秒で引きつけ、テンポ重視、最後にひと言オチ）",
+  duo: "二人の掛け合い雑談の台本（A: / B: の形式）",
+};
+
+// ---------------- ニュース取得（RSS の見出しのみ使用） ----------------
+const NEWS_FEEDS = [
+  "https://www3.nhk.or.jp/rss/news/cat0.xml",
+  "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
+];
+
+async function fetchNewsTitles(): Promise<string[]> {
+  const since = Date.now() - 48 * 3600e3; // 昨日と今日
+  const results = await Promise.allSettled(NEWS_FEEDS.map((u) => fetch(u).then((r) => r.text())));
+  const titles = new Set<string>();
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    for (const item of r.value.match(/<item[\s\S]*?<\/item>/g) ?? []) {
+      const t = item.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1];
+      const d = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1];
+      if (!t) continue;
+      if (d && Date.parse(d) < since) continue;
+      titles.add(t.replace(/\s+-\s+[^-]+$/, "").replace(/&amp;/g, "&").trim()); // Google の「- 媒体名」を除く
+    }
+  }
+  return [...titles].slice(0, 120);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
@@ -129,10 +169,10 @@ Deno.serve(async (req) => {
     const { data: s } = await supabase.from("settings").select("*").maybeSingle();
     const provider: Provider = (s?.ai_provider as Provider) || "claude";
     const models = { ...DEFAULT_MODELS[provider], ...(s?.models?.[provider] ?? {}) };
-    const generate = (tier: Tier, system: string, prompt: string, maxTokens: number) => {
+    const generate = (tier: Tier, system: string, prompt: string, maxTokens: number, effort?: Effort) => {
       const model = models[tier];
       if (!model) throw new Error(`${provider} の ${tier} モデル名が未設定です（設定画面で入力）`);
-      return PROVIDERS[provider]({ model, system, prompt, maxTokens }).then((text) => ({ model, text }));
+      return PROVIDERS[provider]({ model, system, prompt, maxTokens, effort }).then((text) => ({ model, text }));
     };
 
     switch (body.task) {
@@ -230,6 +270,47 @@ Deno.serve(async (req) => {
         for (const [k, v] of Object.entries(o)) { const l = strList(v, 300); if (l.length) categories[k] = l; }
         await supabase.from("settings").upsert({ user_id: user.id, categories });
         return json({ tagged, categories });
+      }
+
+      // アイデア出し：昨日・今日のニュースから話題のキーワード10個
+      case "news": {
+        const titles = await fetchNewsTitles();
+        if (!titles.length) return json({ error: "ニュースを取得できませんでした" }, 502);
+        const system =
+          "ニュースの見出し一覧から、いま話題になっているキーワードを10個選びます。" +
+          "同じ話題は1つにまとめ、ジャンルが偏らないようにしてください。各キーワードに15文字以内の短い説明を付けます。" +
+          '出力はJSONのみ: {"keywords":[{"word":"…","note":"…"}, …]}';
+        const { text } = await generate("light", system, titles.join("\n"), 2000);
+        const o = parseJsonObject(text);
+        const keywords = (Array.isArray(o.keywords) ? o.keywords : [])
+          .map((k: { word?: unknown; note?: unknown }) => ({ word: String(k?.word ?? "").trim(), note: String(k?.note ?? "").trim() }))
+          .filter((k: { word: string }) => k.word).slice(0, 10);
+        return json({ keywords, count: titles.length });
+      }
+
+      // 台本作成
+      case "script": {
+        const keywords = strList(body.keywords, 10);
+        if (!keywords.length) return json({ error: "キーワードを選んでください" }, 400);
+        const len = LENGTHS[body.length as keyof typeof LENGTHS] ?? LENGTHS["1m"];
+        const style = STYLES[body.style as keyof typeof STYLES] ?? STYLES.chat;
+        const system =
+          "あなたは YouTube などの動画や配信の構成作家です。ユーザーのキーワードから、" +
+          `${style}を書きます。長さは${len.label}（日本語でおよそ${len.chars}文字）。` +
+          "1行目に「タイトル：」で始まるタイトルを書き、その後に本文を書きます。" +
+          "前置きや「以下が台本です」などの説明は書かないでください。";
+        const prompt = `キーワード: ${keywords.join("、")}` + (body.note ? `\n補足・要望: ${String(body.note)}` : "");
+        const { model, text } = await generate("heavy", system, prompt, len.maxTokens, len.effort);
+
+        const lines = text.trim().split("\n");
+        const m = lines[0]?.match(/^タイトル[：:]\s*(.+)$/);
+        const title = m ? m[1].trim() : keywords.join("・");
+        const content = (m ? lines.slice(1) : lines).join("\n").trim();
+        const { data: saved, error } = await supabase.from("scripts").insert({
+          keywords, length: body.length ?? "1m", style: body.style ?? "chat", title, body: content, model,
+        }).select().single();
+        if (error) return json({ title, body: content, model, warning: "保存できませんでした: " + error.message });
+        return json(saved);
       }
 
       default:

@@ -43,3 +43,21 @@ create policy "own memos" on public.memos
 drop policy if exists "own settings" on public.settings;
 create policy "own settings" on public.settings
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- 第3段階：作成した台本
+create table if not exists public.scripts (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  keywords    text[] not null default '{}',
+  length      text not null,   -- 10s / 1m / 5m / long
+  style       text not null,   -- chat / video / short / duo
+  title       text not null default '',
+  body        text not null default '',
+  model       text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists scripts_user_created on public.scripts (user_id, created_at desc);
+alter table public.scripts enable row level security;
+drop policy if exists "own scripts" on public.scripts;
+create policy "own scripts" on public.scripts
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());

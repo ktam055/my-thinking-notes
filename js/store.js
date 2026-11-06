@@ -111,6 +111,18 @@ export async function saveSettings(s) {
   if (error) throw error;
 }
 
+// ---------- scripts（台本・クラウドのみ） ----------
+export async function listScripts() {
+  if (!isCloud) return [];
+  const { data, error } = await supabase.from("scripts").select("*").order("created_at", { ascending: false }).limit(50);
+  if (error) throw error;
+  return data;
+}
+export async function deleteScript(id) {
+  const { error } = await supabase.from("scripts").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ---------- AI (Supabase Edge Function "ai") ----------
 // クラウドモードでのみ動作。失敗してもメモ保存には影響させない。
 export async function callAI(task, payload) {
