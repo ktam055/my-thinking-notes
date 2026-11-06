@@ -26,8 +26,11 @@ create table if not exists public.settings (
   ai_provider text not null default 'claude',  -- claude / gemini / openai
   models      jsonb not null default '{}'::jsonb,
   auto_tag    boolean not null default true,
+  categories  jsonb not null default '{}'::jsonb, -- {"分類名": ["タグ", ...]}
   updated_at  timestamptz not null default now()
 );
+-- 第2段階で追加（既にテーブルがある場合用）
+alter table public.settings add column if not exists categories jsonb not null default '{}'::jsonb;
 
 -- 自分のデータだけ読み書きできるようにする
 alter table public.memos    enable row level security;

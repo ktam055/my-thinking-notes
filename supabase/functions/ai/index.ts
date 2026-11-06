@@ -96,6 +96,24 @@ function parseJsonArray(text: string): string[] {
   } catch { return []; }
 }
 
+function parseJsonObject(text: string): Record<string, unknown> {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return {};
+  try {
+    const o = JSON.parse(m[0]);
+    return o && typeof o === "object" && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+}
+
+const strList = (v: unknown, max: number) =>
+  (Array.isArray(v) ? v : []).map(String).map((s) => s.trim()).filter(Boolean).slice(0, max);
+
+const todayRangeJST = () => {
+  const now = new Date(Date.now() + 9 * 3600e3);
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - 9 * 3600e3);
+  return start.toISOString();
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
@@ -141,6 +159,77 @@ Deno.serve(async (req) => {
         const tags = parseJsonArray(text).slice(0, 3);
         if (tags.length) await supabase.from("memos").update({ tags }).eq("id", memo.id);
         return json({ tags });
+      }
+
+      // 思い出し：メモから連想キーワードを出す
+      case "associate": {
+        let q = supabase.from("memos").select("id, content, tags, created_at");
+        if (Array.isArray(body.memo_ids) && body.memo_ids.length) q = q.in("id", body.memo_ids);
+        else q = q.gte("created_at", new Date(Date.now() - 7 * 86400e3).toISOString());
+        const { data: memos } = await q.order("created_at", { ascending: false }).limit(30);
+        if (!memos?.length) return json({ theme: "", keywords: [] });
+
+        const system =
+          "あなたは発想を広げる相棒です。ユーザーのメモ群を読み、共通するテーマを一言でまとめ、" +
+          "そこから連想される日本語キーワードを10個出します。メモに書かれた語をそのまま繰り返すだけでなく、" +
+          "少し視点をずらした語も混ぜてください。" +
+          '出力はJSONのみ: {"theme":"…","keywords":["…", …]}';
+        const prompt = memos.map((m: { content: string }) => `- ${m.content}`).join("\n");
+        const { text } = await generate("light", system, prompt, 800);
+        const o = parseJsonObject(text);
+        return json({ theme: String(o.theme ?? ""), keywords: strList(o.keywords, 10) });
+      }
+
+      // 日報の一言感想（1行）
+      case "oneliner": {
+        const keyword = String(body.keyword ?? "").trim();
+        if (!keyword) return json({ error: "キーワードがありません" }, 400);
+        const { data: today } = await supabase.from("memos").select("content")
+          .gte("created_at", todayRangeJST()).order("created_at").limit(20);
+        const system =
+          "あなたはユーザー本人の代わりに日報の「今日の感想」を一言で書きます。" +
+          "一人称・自然な話し言葉で、40文字前後の1行だけを出力してください。前置きや引用符は不要です。";
+        const prompt = `キーワード: ${keyword}\n\n今日のメモ（参考）:\n` +
+          ((today ?? []).map((m: { content: string }) => `- ${m.content}`).join("\n") || "（なし）");
+        const { text } = await generate("light", system, prompt, 300);
+        const line = text.split("\n").map((s) => s.trim()).find(Boolean) ?? "";
+        return json({ line: line.replace(/^["「]|["」]$/g, "") });
+      }
+
+      // 分類：未タグのメモにタグを付け、タグをカテゴリにまとめて保存
+      case "categorize": {
+        const { data: untagged } = await supabase.from("memos").select("id, content")
+          .eq("tags", "{}").order("created_at", { ascending: false }).limit(30);
+        let tagged = 0;
+        if (untagged?.length) {
+          const system =
+            "各メモに内容を表す短い日本語タグを1〜3個付けます。" +
+            '出力はJSONのみ: {"<id>":["タグ",…], …}';
+          const prompt = untagged.map((m: { id: string; content: string }) => `${m.id}: ${m.content}`).join("\n");
+          const { text } = await generate("light", system, prompt, 3000);
+          const o = parseJsonObject(text);
+          for (const m of untagged) {
+            const tags = strList(o[m.id], 3);
+            if (tags.length) { await supabase.from("memos").update({ tags }).eq("id", m.id); tagged++; }
+          }
+        }
+
+        const { data: rows } = await supabase.from("memos").select("tags").limit(2000);
+        const count = new Map<string, number>();
+        for (const r of rows ?? []) for (const t of r.tags as string[]) count.set(t, (count.get(t) ?? 0) + 1);
+        const tags = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 300).map(([t, n]) => `${t}(${n})`);
+        if (!tags.length) return json({ tagged, categories: {} });
+
+        const system =
+          "タグの一覧を、意味の近いもの同士で5〜10個のカテゴリにまとめます。カテゴリ名は短い日本語。" +
+          "すべてのタグをどれか1つのカテゴリに入れてください。括弧内は件数です（出力には含めない）。" +
+          '出力はJSONのみ: {"カテゴリ名":["タグ",…], …}';
+        const { text } = await generate("light", system, tags.join(", "), 4000);
+        const o = parseJsonObject(text);
+        const categories: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(o)) { const l = strList(v, 300); if (l.length) categories[k] = l; }
+        await supabase.from("settings").upsert({ user_id: user.id, categories });
+        return json({ tagged, categories });
       }
 
       default:

@@ -22,6 +22,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   background: var(--bg);
@@ -84,6 +85,14 @@ button:disabled { opacity: .5; cursor: default; }
 .memo .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
 .memo .body { white-space: pre-wrap; word-break: break-word; }
 .tag { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.tag[data-tag] { cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border-radius: 999px; padding: 6px 14px; font-weight: 500; }
+.chip.on { background: var(--accent); color: #fff; }
+.oneliner {
+  margin-top: 10px; padding: 12px; border-radius: 10px; background: var(--accent-soft);
+  font-size: 17px; white-space: pre-wrap;
+}
 .day { font-size: 13px; color: var(--muted); margin: 18px 0 6px; font-weight: 600; }
 .empty { color: var(--muted); text-align: center; padding: 24px 0; }
 

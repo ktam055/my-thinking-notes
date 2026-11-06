@@ -24,10 +24,10 @@ function fmtDay(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
 }
-const SOURCE_LABEL = { text: "⌨️", voice: "🎤", idea: "💡" };
+const SOURCE_LABEL = { text: "⌨️", voice: "🎤", idea: "💡", diary: "📝" };
 
 function memoHTML(m) {
-  const tags = (m.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join("");
+  const tags = (m.tags || []).map((t) => `<span class="tag" data-tag="${esc(t)}">${esc(t)}</span>`).join("");
   return `<div class="memo">
     <div class="meta"><span>${SOURCE_LABEL[m.source] || ""} ${fmtTime(m.created_at)}</span>${tags}</div>
     <div class="body">${esc(m.content)}</div>
@@ -133,15 +133,58 @@ async function renderList() {
         <input id="q" class="grow" placeholder="キーワードで絞り込み">
         <select id="sort" style="width:auto">
           <option value="date">日付順</option>
+          <option value="cat">分類別</option>
           <option value="tag">タグ別</option>
         </select>
       </div>
+      <div class="row" id="cat-row" style="margin-top:10px" hidden>
+        <div class="grow hint" id="cat-hint"></div>
+        <button id="recat">分類を更新（AI）</button>
+      </div>
+      <p class="hint">タグを押すと、同じタグのメモ（似たメモ）に絞り込めます。</p>
     </div>
     <div id="list"></div>`;
-  const all = await store.listMemos();
+  let all = await store.listMemos();
   const q = view.querySelector("#q");
   const sort = view.querySelector("#sort");
   const listEl = view.querySelector("#list");
+  const catRow = view.querySelector("#cat-row");
+  const catHint = view.querySelector("#cat-hint");
+  const recat = view.querySelector("#recat");
+  try { sort.value = localStorage.getItem("mtn.sort") || "date"; } catch {}
+
+  listEl.onclick = (e) => {
+    const t = e.target.closest("[data-tag]");
+    if (!t) return;
+    q.value = t.dataset.tag;
+    draw();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  recat.onclick = async () => {
+    recat.disabled = true;
+    catHint.textContent = "AI が分類しています…（数十秒かかることがあります）";
+    try {
+      const r = await store.callAI("categorize", {});
+      settings.categories = r.categories;
+      all = await store.listMemos();
+      toast(`分類しました${r.tagged ? `（${r.tagged}件にタグ付け）` : ""}`);
+      draw();
+    } catch (e) {
+      catHint.textContent = "失敗しました: " + e.message;
+    } finally { recat.disabled = false; }
+  };
+
+  function groupBy(list, keysOf) {
+    const map = new Map();
+    for (const m of list) for (const k of keysOf(m)) {
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(m);
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
+  }
+  const section = (title, ms) =>
+    `<div class="day">${title}（${ms.length}件）</div><div class="card">${ms.map(memoHTML).join("")}</div>`;
 
   function draw() {
     const kw = q.value.trim().toLowerCase();
@@ -150,27 +193,27 @@ async function renderList() {
       : all;
     if (!list.length) { listEl.innerHTML = `<div class="empty">メモがありません</div>`; return; }
 
+    catRow.hidden = sort.value !== "cat";
     if (sort.value === "date") {
-      listEl.innerHTML = groupByDay(list).map((g) =>
-        `<div class="day">${fmtDay(g[0].created_at)}（${g.length}件）</div><div class="card">${g.map(memoHTML).join("")}</div>`
-      ).join("");
+      listEl.innerHTML = groupByDay(list).map((g) => section(fmtDay(g[0].created_at), g)).join("");
+    } else if (sort.value === "tag") {
+      listEl.innerHTML = groupBy(list, (m) => (m.tags?.length ? m.tags : ["未分類"]))
+        .map(([t, ms]) => section("#" + esc(t), ms)).join("");
     } else {
-      const byTag = new Map();
-      for (const m of list) {
-        const tags = m.tags?.length ? m.tags : ["未分類"];
-        for (const t of tags) {
-          if (!byTag.has(t)) byTag.set(t, []);
-          byTag.get(t).push(m);
-        }
-      }
-      const entries = [...byTag.entries()].sort((a, b) => b[1].length - a[1].length);
-      listEl.innerHTML = entries.map(([t, ms]) =>
-        `<div class="day">#${esc(t)}（${ms.length}件）</div><div class="card">${ms.map(memoHTML).join("")}</div>`
-      ).join("");
+      const cats = settings?.categories || {};
+      const tagToCat = new Map();
+      for (const [c, tags] of Object.entries(cats)) for (const t of tags) tagToCat.set(t, c);
+      if (!store.isCloud) catHint.textContent = "分類はクラウド設定後に使えます";
+      else if (!tagToCat.size) catHint.textContent = "まだ分類がありません。「分類を更新」を押してください。";
+      else catHint.textContent = `${Object.keys(cats).length}個の分類。新しいメモが増えたら更新してください。`;
+      listEl.innerHTML = groupBy(list, (m) => {
+        const cs = [...new Set((m.tags || []).map((t) => tagToCat.get(t)).filter(Boolean))];
+        return cs.length ? cs : ["その他"];
+      }).map(([c, ms]) => section(esc(c), ms)).join("");
     }
   }
   q.oninput = draw;
-  sort.onchange = draw;
+  sort.onchange = () => { try { localStorage.setItem("mtn.sort", sort.value); } catch {} draw(); };
   draw();
 }
 
@@ -212,6 +255,105 @@ async function renderManage() {
     } catch (err) {
       toast("失敗しました: " + err.message);
     }
+  };
+}
+
+// ---------------- 思い出し画面 ----------------
+async function renderRecall() {
+  view.innerHTML = `
+    <div class="card">
+      <div class="row"><div class="grow day" style="margin:0">過去のメモから</div><button id="shuffle">🔀 別のメモ</button></div>
+      <div id="past"></div>
+    </div>
+    <div class="card">
+      <div class="day" style="margin-top:0">連想キーワード</div>
+      <div class="row">
+        <button id="assoc-recent" class="primary">最近1週間から連想</button>
+        <button id="assoc-past">上のメモから連想</button>
+      </div>
+      <p id="theme" class="hint"></p>
+      <div id="chips" class="chips"></div>
+    </div>
+    <div class="card">
+      <div class="day" style="margin-top:0">今日の一言感想（日報用）</div>
+      <div class="row">
+        <input id="kw" class="grow" placeholder="キーワード（上のチップを押すと入ります）">
+        <button id="make" class="primary">作る</button>
+      </div>
+      <div id="result" class="oneliner" hidden></div>
+      <div class="row" id="result-actions" style="margin-top:8px;justify-content:flex-end" hidden>
+        <button id="copy">コピー</button>
+        <button id="save-line" class="primary">メモに保存</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="kw-memo">キーワードをメモに追加</button>
+      </div>
+    </div>`;
+
+  const $ = (s) => view.querySelector(s);
+  const all = await store.listMemos();
+  const today = new Date().toDateString();
+  const past = all.filter((m) => new Date(m.created_at).toDateString() !== today && m.source !== "diary");
+  let picked = [];
+
+  function shuffle() {
+    const pool = past.length ? past : all;
+    picked = [...pool].sort(() => Math.random() - 0.5).slice(0, 3);
+    $("#past").innerHTML = picked.length
+      ? picked.map((m) => memoHTML(m).replace('<div class="meta">', `<div class="meta"><span>${fmtDay(m.created_at)}</span>`)).join("")
+      : `<div class="empty">まだメモがありません</div>`;
+  }
+  shuffle();
+  $("#shuffle").onclick = shuffle;
+
+  async function associate(ids) {
+    $("#theme").textContent = "連想しています…";
+    $("#chips").innerHTML = "";
+    try {
+      const r = await store.callAI("associate", ids ? { memo_ids: ids } : {});
+      $("#theme").textContent = r.theme ? `テーマ：${r.theme}` : (r.keywords.length ? "" : "メモが足りません");
+      $("#chips").innerHTML = r.keywords.map((k) => `<button class="chip" data-kw="${esc(k)}">${esc(k)}</button>`).join("");
+    } catch (e) {
+      $("#theme").textContent = "失敗しました: " + e.message;
+    }
+  }
+  $("#assoc-recent").onclick = () => associate(null);
+  $("#assoc-past").onclick = () => picked.length && associate(picked.map((m) => m.id));
+  $("#chips").onclick = (e) => {
+    const c = e.target.closest("[data-kw]");
+    if (!c) return;
+    view.querySelectorAll(".chip").forEach((x) => x.classList.toggle("on", x === c));
+    $("#kw").value = c.dataset.kw;
+  };
+
+  $("#make").onclick = async () => {
+    const keyword = $("#kw").value.trim();
+    if (!keyword) { toast("キーワードを入れてください"); return; }
+    $("#make").disabled = true;
+    $("#result").hidden = false;
+    $("#result").textContent = "作成中…";
+    $("#result-actions").hidden = true;
+    try {
+      const r = await store.callAI("oneliner", { keyword });
+      $("#result").textContent = r.line;
+      $("#result-actions").hidden = !r.line;
+    } catch (e) {
+      $("#result").textContent = "失敗しました: " + e.message;
+    } finally { $("#make").disabled = false; }
+  };
+  $("#copy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("#result").textContent); toast("コピーしました"); }
+    catch { toast("コピーできませんでした"); }
+  };
+  $("#save-line").onclick = async () => {
+    try { await store.addMemo($("#result").textContent, "diary"); toast("メモに保存しました"); }
+    catch (e) { toast("保存に失敗: " + e.message); }
+  };
+  $("#kw-memo").onclick = async () => {
+    const keyword = $("#kw").value.trim();
+    if (!keyword) return;
+    try { await store.addMemo(keyword, "idea"); toast("キーワードを追加しました"); }
+    catch (e) { toast("保存に失敗: " + e.message); }
   };
 }
 
@@ -307,7 +449,10 @@ function renderLogin() {
 }
 
 // ---------------- ルーター ----------------
-const routes = { "/": renderInput, "/list": renderList, "/manage": renderManage, "/settings": renderSettings };
+const routes = {
+  "/": renderInput, "/list": renderList, "/recall": renderRecall,
+  "/manage": renderManage, "/settings": renderSettings,
+};
 
 async function route() {
   if (store.isCloud && !user) { renderLogin(); return; }
