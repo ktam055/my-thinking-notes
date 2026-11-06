@@ -104,6 +104,10 @@ button:disabled { opacity: .5; cursor: default; }
 .body.secret { cursor: pointer; color: var(--muted); }
 .body.secret.shown { color: var(--text); font-family: ui-monospace, Consolas, monospace; }
 .src-shopping, .src-todo, .src-later, .src-want, .src-secret { color: var(--accent); border-color: var(--accent); }
+.thumb { display: block; max-width: 220px; max-height: 220px; border-radius: 8px; margin: 6px 0; cursor: zoom-in; border: 1px solid var(--line); }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 20; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.lightbox img { max-width: 96vw; max-height: 92vh; }
+.src-image { color: var(--accent); border-color: var(--accent); }
 .script-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 details.card > summary { cursor: pointer; list-style: none; }
 details.card > summary::-webkit-details-marker { display: none; }

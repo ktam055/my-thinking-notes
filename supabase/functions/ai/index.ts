@@ -23,15 +23,24 @@ const json = (body: unknown, status = 200) =>
 
 // ---------------- 各社 API の呼び出し（ここだけ差し替えれば別の AI に対応できる） ----------------
 type Effort = "low" | "medium" | "high";
-interface GenArgs { model: string; system: string; prompt: string; maxTokens: number; effort?: Effort }
+interface GenImage { mediaType: string; data: string } // data = base64
+interface GenArgs { model: string; system: string; prompt: string; maxTokens: number; effort?: Effort; image?: GenImage }
 
-async function callClaude({ model, system, prompt, maxTokens, effort }: GenArgs): Promise<string> {
+async function callClaude({ model, system, prompt, maxTokens, effort, image }: GenArgs): Promise<string> {
   const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
   const params = {
     model,
     max_tokens: maxTokens,
     system,
-    messages: [{ role: "user" as const, content: prompt }],
+    messages: [{
+      role: "user" as const,
+      content: image
+        ? [
+            { type: "image" as const, source: { type: "base64" as const, media_type: image.mediaType as "image/jpeg", data: image.data } },
+            { type: "text" as const, text: prompt },
+          ]
+        : prompt,
+    }],
     // 考える深さ。軽い処理は low で速く・安く
     output_config: { effort: effort ?? "low" },
   };
@@ -49,7 +58,7 @@ async function callClaude({ model, system, prompt, maxTokens, effort }: GenArgs)
     .map((b: { type: string; text?: string }) => b.text ?? "").join("");
 }
 
-async function callGemini({ model, system, prompt, maxTokens }: GenArgs): Promise<string> {
+async function callGemini({ model, system, prompt, maxTokens, image }: GenArgs): Promise<string> {
   const key = Deno.env.get("GEMINI_API_KEY");
   if (!key) throw new Error("GEMINI_API_KEY が未設定です");
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -57,7 +66,10 @@ async function callGemini({ model, system, prompt, maxTokens }: GenArgs): Promis
     headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: [{ role: "user", parts: [
+        ...(image ? [{ inlineData: { mimeType: image.mediaType, data: image.data } }] : []),
+        { text: prompt },
+      ] }],
       generationConfig: { maxOutputTokens: maxTokens },
     }),
   });
@@ -66,7 +78,7 @@ async function callGemini({ model, system, prompt, maxTokens }: GenArgs): Promis
   return (d.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
 }
 
-async function callOpenAI({ model, system, prompt, maxTokens }: GenArgs): Promise<string> {
+async function callOpenAI({ model, system, prompt, maxTokens, image }: GenArgs): Promise<string> {
   const key = Deno.env.get("OPENAI_API_KEY");
   if (!key) throw new Error("OPENAI_API_KEY が未設定です");
   const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -75,7 +87,12 @@ async function callOpenAI({ model, system, prompt, maxTokens }: GenArgs): Promis
     body: JSON.stringify({
       model,
       max_completion_tokens: maxTokens,
-      messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      messages: [{ role: "system", content: system }, {
+        role: "user",
+        content: image
+          ? [{ type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } }, { type: "text", text: prompt }]
+          : prompt,
+      }],
     }),
   });
   if (!r.ok) throw new Error(`OpenAI error ${r.status}: ${await r.text()}`);
@@ -202,10 +219,10 @@ Deno.serve(async (req) => {
     const { data: s } = await supabase.from("settings").select("*").maybeSingle();
     const provider: Provider = (s?.ai_provider as Provider) || "claude";
     const models = { ...DEFAULT_MODELS[provider], ...(s?.models?.[provider] ?? {}) };
-    const generate = (tier: Tier, system: string, prompt: string, maxTokens: number, effort?: Effort) => {
+    const generate = (tier: Tier, system: string, prompt: string, maxTokens: number, effort?: Effort, image?: GenImage) => {
       const model = models[tier];
       if (!model) throw new Error(`${provider} の ${tier} モデル名が未設定です（設定画面で入力）`);
-      return PROVIDERS[provider]({ model, system, prompt, maxTokens, effort }).then((text) => ({ model, text }));
+      return PROVIDERS[provider]({ model, system, prompt, maxTokens, effort, image }).then((text) => ({ model, text }));
     };
 
     switch (body.task) {
@@ -347,6 +364,37 @@ Deno.serve(async (req) => {
         }).select().single();
         if (error) return json({ title, body: content, model, warning: "保存できませんでした: " + error.message });
         return json(saved);
+      }
+
+      // 画像メモの文字を読み取り、本文とタグに入れる
+      case "ocr": {
+        const { data: memo } = await supabase.from("memos").select("*").eq("id", body.memo_id).single();
+        if (!memo?.image_path) return json({ error: "画像メモが見つかりません" }, 404);
+        if (memo.source === "secret") return json({ text: "", tags: [] });
+        const { data: file, error: dlErr } = await supabase.storage.from("memo-images").download(memo.image_path);
+        if (dlErr || !file) return json({ error: "画像を読み込めません: " + (dlErr?.message ?? "") }, 500);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let bin = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        const image = { mediaType: file.type || "image/jpeg", data: btoa(bin) };
+
+        const system =
+          "画像に写っている文字をそのまま書き起こします。改行や並びはできるだけ保ちます。" +
+          "文字がほとんど無い画像なら、何が写っているかを1〜2文で説明します。" +
+          "最後の行に「タグ: 」に続けて、内容を表す短いタグを1〜3個、読点区切りで書きます。前置きは書かないでください。";
+        const { text } = await generate("light", system, "この画像の文字を書き起こしてください。", 4000, "low", image);
+        const lines = text.trim().split("\n");
+        const last = lines[lines.length - 1] ?? "";
+        const tm = last.match(/^タグ[：:]\s*(.+)$/);
+        const tags = tm ? tm[1].split(/[、,，]/).map((t) => t.trim()).filter(Boolean).slice(0, 3) : [];
+        const extracted = (tm ? lines.slice(0, -1) : lines).join("\n").trim();
+
+        const typed = String(memo.content ?? "").trim();
+        const content = typed ? `${typed}\n\n${extracted}` : (extracted || "（文字なし）");
+        await supabase.from("memos").update({
+          content, tags: [...new Set([...(memo.tags ?? []), ...tags])],
+        }).eq("id", memo.id);
+        return json({ text: extracted, tags });
       }
 
       default:

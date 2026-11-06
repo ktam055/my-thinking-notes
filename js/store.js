@@ -48,8 +48,8 @@ function writeLocal(list) {
   localStorage.setItem(LOCAL_KEY, JSON.stringify(list));
 }
 
-export async function addMemo(content, source = "text") {
-  const memo = { content, source, tags: [] };
+export async function addMemo(content, source = "text", extra = {}) {
+  const memo = { content, source, tags: [], ...extra };
   if (!isCloud) {
     const now = new Date().toISOString();
     const row = { id: crypto.randomUUID(), ...memo, created_at: now, updated_at: now };
@@ -80,10 +80,39 @@ export async function updateMemo(id, patch) {
   if (error) throw error;
 }
 
-export async function deleteMemo(id) {
+export async function deleteMemo(id, imagePath) {
   if (!isCloud) { writeLocal(readLocal().filter((m) => m.id !== id)); return; }
   const { error } = await supabase.from("memos").delete().eq("id", id);
   if (error) throw error;
+  if (imagePath) await supabase.storage.from(IMAGE_BUCKET).remove([imagePath]).catch(() => {});
+}
+
+// ---------- 画像 ----------
+const IMAGE_BUCKET = "memo-images";
+// ローカルモードでは画像を data URL のまま memo に入れる
+export async function uploadImage(blob) {
+  if (!isCloud) {
+    return await new Promise((ok, ng) => {
+      const r = new FileReader();
+      r.onload = () => ok(r.result); r.onerror = ng; r.readAsDataURL(blob);
+    });
+  }
+  const { data: u } = await supabase.auth.getUser();
+  const path = `${u.user.id}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}.jpg`;
+  const { error } = await supabase.storage.from(IMAGE_BUCKET).upload(path, blob, { contentType: "image/jpeg" });
+  if (error) throw error;
+  return path;
+}
+const urlCache = new Map();
+export async function imageURL(path) {
+  if (!path) return "";
+  if (path.startsWith("data:")) return path;
+  const hit = urlCache.get(path);
+  if (hit && hit.exp > Date.now()) return hit.url;
+  const { data, error } = await supabase.storage.from(IMAGE_BUCKET).createSignedUrl(path, 3600);
+  if (error) throw error;
+  urlCache.set(path, { url: data.signedUrl, exp: Date.now() + 50 * 60e3 });
+  return data.signedUrl;
 }
 
 // ---------- settings ----------

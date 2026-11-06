@@ -61,3 +61,18 @@ alter table public.scripts enable row level security;
 drop policy if exists "own scripts" on public.scripts;
 create policy "own scripts" on public.scripts
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- ===== 画像メモ（2026-11 追加） =====
+alter table public.memos add column if not exists image_path text;
+insert into storage.buckets (id, name, public) values ('memo-images', 'memo-images', false)
+  on conflict (id) do nothing;
+drop policy if exists "own images read" on storage.objects;
+drop policy if exists "own images write" on storage.objects;
+drop policy if exists "own images delete" on storage.objects;
+create policy "own images read" on storage.objects for select
+  using (bucket_id = 'memo-images' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "own images write" on storage.objects for insert
+  with check (bucket_id = 'memo-images' and (storage.foldername(name))[1] = auth.uid()::text);
+create policy "own images delete" on storage.objects for delete
+  using (bucket_id = 'memo-images' and (storage.foldername(name))[1] = auth.uid()::text);
+notify pgrst, 'reload schema';

@@ -37,6 +37,7 @@ const SOURCES = {
   later:    { icon: "🔍", name: "あとで調べる" },
   want:     { icon: "⭐", name: "欲しい" },
   secret:   { icon: "🔒", name: "パスワード等" },
+  image:    { icon: "📷", name: "画像" },
 };
 // 入力画面で選べる種類（memo = 普通のメモ。音声なら voice になる）
 const INPUT_KINDS = ["memo", "shopping", "todo", "later", "want", "secret"];
@@ -63,6 +64,7 @@ const SOURCE_FILTERS = {
   later:    { name: "🔍 あとで調べる", match: (s) => s === "later" },
   want:     { name: "⭐ 欲しい", match: (s) => s === "want" },
   secret:   { name: "🔒 パスワード等", match: (s) => s === "secret" },
+  image:    { name: "📷 画像", match: (s, m) => s === "image" || Boolean(m?.image_path) },
 };
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
@@ -81,9 +83,10 @@ function memoHTML(m) {
   const body = m.source === "secret"
     ? `<div class="body secret" data-secret="${esc(m.content)}">${SECRET_MASK}</div>`
     : `<div class="body">${esc(m.content)}</div>`;
+  const img = m.image_path ? `<img class="thumb" data-img="${esc(m.image_path)}" alt="画像">` : "";
   return `<div class="memo">
     <div class="meta">${sourceBadge(m.source)}<span>${fmtTime(m.created_at)}</span>${tags}</div>
-    ${body}
+    ${img}${body}
   </div>`;
 }
 
@@ -97,6 +100,37 @@ document.addEventListener("click", async (e) => {
     el.innerHTML = SECRET_MASK;
   }
 });
+
+// 画像の表示：画面に img[data-img] が出たら署名付き URL を入れる
+function hydrateImages(root = document) {
+  root.querySelectorAll("img[data-img]:not([src])").forEach(async (el) => {
+    el.setAttribute("src", "");
+    try { el.src = await store.imageURL(el.dataset.img); } catch { el.alt = "画像を読み込めません"; }
+  });
+}
+new MutationObserver(() => hydrateImages()).observe(document.getElementById("view"), { childList: true, subtree: true });
+// 画像を押すと拡大表示
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("img.thumb");
+  if (t && t.src) {
+    const box = document.createElement("div");
+    box.className = "lightbox";
+    box.innerHTML = `<img src="${esc(t.src)}" alt="">`;
+    box.onclick = () => box.remove();
+    document.body.append(box);
+  }
+});
+
+// 画像を縮小して JPEG にする（長辺1600px）
+async function shrinkImage(file, max = 1600) {
+  const bmp = await createImageBitmap(file);
+  const r = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * r); c.height = Math.round(bmp.height * r);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  return await new Promise((ok) => c.toBlob(ok, "image/jpeg", 0.82));
+}
 
 function groupByDay(list) {
   const groups = new Map();
@@ -119,6 +153,8 @@ async function renderInput() {
       <textarea id="memo-text" placeholder="思いついたこと、見聞きしたこと、キーワード…"></textarea>
       <div class="row" style="margin-top:10px">
         <button id="mic" class="mic" title="音声入力">🎤</button>
+        <button id="cam" class="mic" title="写真・画像を追加">📷</button>
+        <input id="file" type="file" accept="image/*" hidden>
         <div class="grow hint" id="mic-hint">マイクを押して話すと文字になります。Ctrl+Enter でも保存できます。</div>
         <button id="save" class="primary">追加</button>
       </div>
@@ -237,6 +273,38 @@ async function renderInput() {
     }
   }
   saveBtn.onclick = save;
+
+  // ---- 画像メモ：縮小して保存し、裏で文字を読み取る ----
+  const fileIn = view.querySelector("#file");
+  view.querySelector("#cam").onclick = () => fileIn.click();
+  fileIn.onchange = async () => {
+    const file = fileIn.files?.[0];
+    fileIn.value = "";
+    if (!file) return;
+    const isSecret = kind === "secret";
+    const typed = ta.value.trim();
+    hint.textContent = "画像を縮小して保存しています…";
+    try {
+      const blob = await shrinkImage(file);
+      const path = await store.uploadImage(blob);
+      const memo = await store.addMemo(typed || (store.isCloud && !isSecret ? "" : "（画像）"),
+        isSecret ? "secret" : "image", { image_path: path });
+      ta.value = ""; usedVoice = false; setKind("memo");
+      toast(`📷 画像を追加しました（${Math.round(blob.size / 1024)}KB）`);
+      loadToday();
+      if (store.isCloud && !isSecret) {
+        hint.textContent = "画像の文字を読み取っています…";
+        store.callAI("ocr", { memo_id: memo.id })
+          .then(() => { hint.textContent = "文字を読み取りました。"; loadToday(); })
+          .catch((e) => { hint.textContent = "文字の読み取りに失敗: " + e.message; });
+      } else {
+        hint.textContent = isSecret ? "🔒 なので文字の読み取り（AI）はしません。" : "マイクを押して話すと文字になります。";
+      }
+    } catch (e) {
+      hint.textContent = "";
+      toast("画像の保存に失敗: " + e.message);
+    }
+  };
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
   });
@@ -353,7 +421,7 @@ async function renderList() {
     const kw = q.value.trim().toLowerCase();
     const srcMatch = (SOURCE_FILTERS[srcSel.value] || SOURCE_FILTERS.all).match;
     const [from, to] = dateRange();
-    const list = all.filter((m) => srcMatch(m.source || "text") &&
+    const list = all.filter((m) => srcMatch(m.source || "text", m) &&
       (!from || new Date(m.created_at) >= from) && (!to || new Date(m.created_at) < to) && (!kw ||
       m.content.toLowerCase().includes(kw) || (m.tags || []).some((t) => t.toLowerCase().includes(kw))));
     if (!list.length) { listEl.innerHTML = `<div class="empty">メモがありません</div>`; return; }
@@ -392,6 +460,7 @@ async function renderManage() {
   listEl.innerHTML = all.map((m) => `
     <div class="card" data-id="${m.id}">
       <div class="hint">${fmtDay(m.created_at)} ${fmtTime(m.created_at)}</div>
+      ${m.image_path ? `<img class="thumb" data-img="${esc(m.image_path)}" alt="画像">` : ""}
       <textarea class="c" style="min-height:70px">${esc(m.content)}</textarea>
       <label>タグ（カンマ区切り）</label>
       <input class="t" value="${esc((m.tags || []).join(", "))}">
@@ -417,7 +486,7 @@ async function renderManage() {
         toast("保存しました");
       } else if (e.target.classList.contains("del")) {
         if (!confirm("このメモを削除しますか？")) return;
-        await store.deleteMemo(id);
+        await store.deleteMemo(id, all.find((m) => m.id === id)?.image_path);
         card.remove();
         toast("削除しました");
       }
