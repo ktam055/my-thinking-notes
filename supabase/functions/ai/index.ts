@@ -380,7 +380,9 @@ Deno.serve(async (req) => {
 
         const system =
           "画像に写っている文字をそのまま書き起こします。改行や並びはできるだけ保ちます。" +
-          "文字がほとんど無い画像なら、何が写っているかを1〜2文で説明します。" +
+          "文字が無い・読めない画像なら、代わりに何が写っているか（物・場所・状況）を「【写真】」で始めて1〜2文で説明します。" +
+          "場所や物の推測ができる場合は「〜のようです」と書きます。" +
+          "文字も写っているものも判別できない場合は「【判別不明な画像】」と書き、分かる範囲で色や雰囲気を一言添えます。" +
           "最後の行に「タグ: 」に続けて、内容を表す短いタグを1〜3個、読点区切りで書きます。前置きは書かないでください。";
         const { text } = await generate("light", system, "この画像の文字を書き起こしてください。", 4000, "low", image);
         const lines = text.trim().split("\n");
@@ -390,7 +392,7 @@ Deno.serve(async (req) => {
         const extracted = (tm ? lines.slice(0, -1) : lines).join("\n").trim();
 
         const typed = String(memo.content ?? "").trim();
-        const content = typed ? `${typed}\n\n${extracted}` : (extracted || "（文字なし）");
+        const content = typed ? `${typed}\n\n${extracted}` : (extracted || "【判別不明な画像】");
         await supabase.from("memos").update({
           content, tags: [...new Set([...(memo.tags ?? []), ...tags])],
         }).eq("id", memo.id);

@@ -296,7 +296,11 @@ async function renderInput() {
         hint.textContent = "画像の文字を読み取っています…";
         store.callAI("ocr", { memo_id: memo.id })
           .then(() => { hint.textContent = "文字を読み取りました。"; loadToday(); })
-          .catch((e) => { hint.textContent = "文字の読み取りに失敗: " + e.message; });
+          .catch(async (e) => {
+            hint.textContent = "文字の読み取りに失敗: " + e.message;
+            // 本文が空のままにならないよう仮の文を入れておく
+            if (!typed) { try { await store.updateMemo(memo.id, { content: "【画像・未読み取り】" }); loadToday(); } catch {} }
+          });
       } else {
         hint.textContent = isSecret ? "🔒 なので文字の読み取り（AI）はしません。" : "マイクを押して話すと文字になります。";
       }
