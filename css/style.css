@@ -86,6 +86,15 @@ button:disabled { opacity: .5; cursor: default; }
 .memo .body { white-space: pre-wrap; word-break: break-word; }
 .tag { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 8px; font-size: 12px; }
 .tag[data-tag] { cursor: pointer; }
+.src { border-radius: 4px; padding: 0 6px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); }
+.src-news  { color: #2f62b3; border-color: #9db7e3; }
+.src-idea  { color: #a46a00; border-color: #e5c27a; }
+.src-diary { color: #7a4fb0; border-color: #c4ade3; }
+@media (prefers-color-scheme: dark) {
+  .src-news  { color: #8fb4ff; border-color: #3d5583; }
+  .src-idea  { color: #f2c14e; border-color: #6b5520; }
+  .src-diary { color: #c9a8ff; border-color: #55407a; }
+}
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { border-radius: 999px; padding: 6px 14px; font-weight: 500; }
 .chip.on { background: var(--accent); color: #fff; }

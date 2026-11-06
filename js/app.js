@@ -24,12 +24,35 @@ function fmtDay(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
 }
-const SOURCE_LABEL = { text: "⌨️", voice: "🎤", idea: "💡", diary: "📝" };
+// メモの種類。news = ニュースから取得したキーワード、idea = 自分で見つけたキーワード
+const SOURCES = {
+  text:  { icon: "⌨️", name: "メモ" },
+  voice: { icon: "🎤", name: "音声メモ" },
+  idea:  { icon: "💡", name: "自分のキーワード" },
+  news:  { icon: "📰", name: "ニュース" },
+  diary: { icon: "📝", name: "一言感想" },
+};
+// 閲覧画面の絞り込み
+const SOURCE_FILTERS = {
+  all:   { name: "すべての種類", match: () => true },
+  memo:  { name: "⌨️🎤 メモ", match: (s) => s === "text" || s === "voice" },
+  idea:  { name: "💡 自分のキーワード", match: (s) => s === "idea" },
+  news:  { name: "📰 ニュース", match: (s) => s === "news" },
+  diary: { name: "📝 一言感想", match: (s) => s === "diary" },
+};
+
+function sourceBadge(source) {
+  const s = SOURCES[source] || SOURCES.text;
+  // 普通のメモはアイコンだけ、キーワード類は名前も出して見分けやすくする
+  return source === "text" || source === "voice"
+    ? `<span title="${s.name}">${s.icon}</span>`
+    : `<span class="src src-${esc(source)}">${s.icon} ${s.name}</span>`;
+}
 
 function memoHTML(m) {
   const tags = (m.tags || []).map((t) => `<span class="tag" data-tag="${esc(t)}">${esc(t)}</span>`).join("");
   return `<div class="memo">
-    <div class="meta"><span>${SOURCE_LABEL[m.source] || ""} ${fmtTime(m.created_at)}</span>${tags}</div>
+    <div class="meta">${sourceBadge(m.source)}<span>${fmtTime(m.created_at)}</span>${tags}</div>
     <div class="body">${esc(m.content)}</div>
   </div>`;
 }
@@ -95,7 +118,7 @@ async function renderInput() {
     const c = e.target.closest("[data-word]");
     if (!c || c.classList.contains("on")) return;
     try {
-      await store.addMemo(c.dataset.word, "idea");
+      await store.addMemo(c.dataset.word, "news");
       c.classList.add("on");
       toast(`「${c.dataset.word}」を追加しました`);
       loadToday();
@@ -179,6 +202,9 @@ async function renderList() {
           <option value="tag">タグ別</option>
         </select>
       </div>
+      <select id="src" style="margin-top:10px">
+        ${Object.entries(SOURCE_FILTERS).map(([v, f]) => `<option value="${v}">${f.name}</option>`).join("")}
+      </select>
       <div class="row" id="cat-row" style="margin-top:10px" hidden>
         <div class="grow hint" id="cat-hint"></div>
         <button id="recat">分類を更新（AI）</button>
@@ -193,7 +219,10 @@ async function renderList() {
   const catRow = view.querySelector("#cat-row");
   const catHint = view.querySelector("#cat-hint");
   const recat = view.querySelector("#recat");
+  const srcSel = view.querySelector("#src");
   try { sort.value = localStorage.getItem("mtn.sort") || "date"; } catch {}
+  try { srcSel.value = localStorage.getItem("mtn.src") || "all"; } catch {}
+  srcSel.onchange = () => { try { localStorage.setItem("mtn.src", srcSel.value); } catch {} draw(); };
 
   listEl.onclick = (e) => {
     const t = e.target.closest("[data-tag]");
@@ -230,9 +259,9 @@ async function renderList() {
 
   function draw() {
     const kw = q.value.trim().toLowerCase();
-    const list = kw
-      ? all.filter((m) => m.content.toLowerCase().includes(kw) || (m.tags || []).some((t) => t.toLowerCase().includes(kw)))
-      : all;
+    const srcMatch = (SOURCE_FILTERS[srcSel.value] || SOURCE_FILTERS.all).match;
+    const list = all.filter((m) => srcMatch(m.source || "text") && (!kw ||
+      m.content.toLowerCase().includes(kw) || (m.tags || []).some((t) => t.toLowerCase().includes(kw))));
     if (!list.length) { listEl.innerHTML = `<div class="empty">メモがありません</div>`; return; }
 
     catRow.hidden = sort.value !== "cat";
@@ -272,6 +301,9 @@ async function renderManage() {
       <textarea class="c" style="min-height:70px">${esc(m.content)}</textarea>
       <label>タグ（カンマ区切り）</label>
       <input class="t" value="${esc((m.tags || []).join(", "))}">
+      <label>種類</label>
+      <select class="s">${Object.entries(SOURCES).map(([v, s]) =>
+        `<option value="${v}" ${v === (m.source || "text") ? "selected" : ""}>${s.icon} ${s.name}</option>`).join("")}</select>
       <div class="row" style="margin-top:10px;justify-content:flex-end">
         <button class="danger del">削除</button>
         <button class="primary upd">保存</button>
@@ -286,7 +318,8 @@ async function renderManage() {
       if (e.target.classList.contains("upd")) {
         const content = card.querySelector(".c").value.trim();
         const tags = card.querySelector(".t").value.split(/[,、]/).map((s) => s.trim()).filter(Boolean);
-        await store.updateMemo(id, { content, tags });
+        const source = card.querySelector(".s").value;
+        await store.updateMemo(id, { content, tags, source });
         toast("保存しました");
       } else if (e.target.classList.contains("del")) {
         if (!confirm("このメモを削除しますか？")) return;
@@ -431,7 +464,7 @@ async function renderScript() {
 
   // 候補：最近のキーワードメモ（💡）と、よく使うタグ
   const memos = await store.listMemos({ limit: 300 });
-  const ideas = memos.filter((m) => m.source === "idea").slice(0, 10).map((m) => m.content);
+  const ideas = memos.filter((m) => m.source === "idea" || m.source === "news").slice(0, 10).map((m) => m.content);
   const tagCount = new Map();
   for (const m of memos) for (const t of m.tags || []) tagCount.set(t, (tagCount.get(t) || 0) + 1);
   const topTags = [...tagCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([t]) => t);
