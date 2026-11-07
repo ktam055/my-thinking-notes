@@ -178,9 +178,17 @@ async function renderInput() {
   const newsBtn = view.querySelector("#news-btn");
   const newsKey = "mtn.news." + new Date().toDateString();
   const drawNews = (kws) => {
-    newsEl.innerHTML = kws.map((k) =>
-      `<button class="chip" data-word="${esc(k.word)}" title="${esc(k.note)}">${esc(k.word)}<small>${esc(k.note)}</small></button>`).join("");
+    newsCache = kws;
+    newsEl.innerHTML = kws.map((k, i) =>
+      `<button class="chip" data-word="${esc(k.word)}" data-i="${i}" title="${esc(k.summary || k.note)}">${esc(k.word)}<small>${esc(k.note)}</small></button>`).join("");
   };
+  let newsCache = [];
+  // メモの本文：キーワード（短い説明） / 概要 / 元の見出し
+  const newsText = (k) => [
+    k.note ? `${k.word}（${k.note}）` : k.word,
+    k.summary,
+    k.headline ? `見出し：${k.headline}` : "",
+  ].filter(Boolean).join("\n");
   try { const c = JSON.parse(localStorage.getItem(newsKey)); if (c) { drawNews(c); newsBtn.textContent = "更新"; } } catch {}
   newsBtn.onclick = async () => {
     newsBtn.disabled = true;
@@ -199,7 +207,7 @@ async function renderInput() {
     const c = e.target.closest("[data-word]");
     if (!c || c.classList.contains("on")) return;
     try {
-      await store.addMemo(c.dataset.word, "news");
+      await store.addMemo(newsText(newsCache[c.dataset.i] || { word: c.dataset.word }), "news");
       c.classList.add("on");
       toast(`「${c.dataset.word}」を追加しました`);
       loadToday();

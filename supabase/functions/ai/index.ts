@@ -331,12 +331,17 @@ Deno.serve(async (req) => {
         }
         const system =
           "ニュースの見出し一覧から、いま話題になっているキーワードを10個選びます。" +
-          "同じ話題は1つにまとめ、ジャンルが偏らないようにしてください。各キーワードに15文字以内の短い説明を付けます。" +
-          '出力はJSONのみ: {"keywords":[{"word":"…","note":"…"}, …]}';
-        const { text } = await generate("light", system, titles.join("\n"), 2000);
+          "同じ話題は1つにまとめ、ジャンルが偏らないようにしてください。各キーワードに15文字以内の短い説明(note)、" +
+          "元になった代表的な見出し1つをそのまま(headline)、何が起きたかを見出しから分かる範囲で40〜80文字にまとめた概要(summary)を付けます。" +
+          "見出しに無い事実は付け足さないでください。" +
+          '出力はJSONのみ: {"keywords":[{"word":"…","note":"…","headline":"…","summary":"…"}, …]}';
+        const { text } = await generate("light", system, titles.join("\n"), 4000);
         const o = parseJsonObject(text);
         const keywords = (Array.isArray(o.keywords) ? o.keywords : [])
-          .map((k: { word?: unknown; note?: unknown }) => ({ word: String(k?.word ?? "").trim(), note: String(k?.note ?? "").trim() }))
+          .map((k: { word?: unknown; note?: unknown; headline?: unknown; summary?: unknown }) => ({
+            word: String(k?.word ?? "").trim(), note: String(k?.note ?? "").trim(),
+            headline: String(k?.headline ?? "").trim(), summary: String(k?.summary ?? "").trim(),
+          }))
           .filter((k: { word: string }) => k.word).slice(0, 10);
         return json({ keywords, count: titles.length });
       }
