@@ -50,6 +50,11 @@ const DATE_FILTERS = {
   month: "この1か月",
   day:   "日付を指定…",
 };
+// ニュースのカテゴリ
+const NEWS_CATS = {
+  general: "📰 一般", it: "💻 IT", ai: "🤖 AI", science: "🔬 科学", ent: "🎬 エンタメ",
+  food: "🍜 食", business: "💹 経済", sports: "⚽ スポーツ", local: "📍 地域",
+};
 // 閲覧画面の絞り込み
 const SOURCE_FILTERS = {
   all:   { name: "すべての種類", match: () => true },
@@ -76,13 +81,16 @@ function sourceBadge(source) {
     : `<span class="src src-${esc(source)}">${s.icon} ${s.name}</span>`;
 }
 
+// 本文中の URL を押せるリンクにする（esc 済みの文字列に使う）
+const linkify = (html) => html.replace(/https?:\/\/[^\s<>"']+/g, (u) =>
+  `<a href="${u}" target="_blank" rel="noopener noreferrer">🔗 ${u.length > 50 ? u.slice(0, 50) + "…" : u}</a>`);
 const SECRET_MASK = "••••••••　<small>（押すと表示・コピー）</small>";
 function memoHTML(m) {
   const tags = (m.tags || []).map((t) => `<span class="tag" data-tag="${esc(t)}">${esc(t)}</span>`).join("");
   // パスワード等は伏せて表示し、押すと表示・コピーできる
   const body = m.source === "secret"
     ? `<div class="body secret" data-secret="${esc(m.content)}">${SECRET_MASK}</div>`
-    : `<div class="body">${esc(m.content)}</div>`;
+    : `<div class="body">${linkify(esc(m.content))}</div>`;
   const img = m.image_path ? `<img class="thumb" data-img="${esc(m.image_path)}" alt="画像">` : "";
   return `<div class="memo">
     <div class="meta">${sourceBadge(m.source)}<span>${fmtTime(m.created_at)}</span>${tags}</div>
@@ -164,6 +172,9 @@ async function renderInput() {
         <div class="grow day" style="margin:0">💡 今日の話題キーワード</div>
         <button id="news-btn">取得</button>
       </div>
+      <div id="news-cats" class="chips kinds" style="margin-top:8px">${Object.entries(NEWS_CATS).map(([v, n]) =>
+        `<button class="chip" data-cat="${v}">${n}</button>`).join("")}</div>
+      <input id="region" placeholder="地域名（例：札幌、横浜市）" style="margin-bottom:8px" hidden>
       <p class="hint" id="news-hint">昨日・今日のニュースから話題を10個提案します。気になるものを押すとメモに追加されます。</p>
       <div id="news" class="chips"></div>
     </div>
@@ -176,7 +187,12 @@ async function renderInput() {
   const newsEl = view.querySelector("#news");
   const newsHint = view.querySelector("#news-hint");
   const newsBtn = view.querySelector("#news-btn");
-  const newsKey = "mtn.news." + new Date().toDateString();
+  const catsEl = view.querySelector("#news-cats");
+  const regionIn = view.querySelector("#region");
+  let newsCat = "general";
+  try { newsCat = localStorage.getItem("mtn.newscat") || "general"; regionIn.value = localStorage.getItem("mtn.region") || ""; } catch {}
+  if (!NEWS_CATS[newsCat]) newsCat = "general";
+  const newsKeyOf = () => `mtn.news.${new Date().toDateString()}.${newsCat}${newsCat === "local" ? "." + regionIn.value.trim() : ""}`;
   const drawNews = (kws) => {
     newsCache = kws;
     newsEl.innerHTML = kws.map((k, i) =>
@@ -188,15 +204,32 @@ async function renderInput() {
     k.note ? `${k.word}（${k.note}）` : k.word,
     k.summary,
     k.headline ? `見出し：${k.headline}` : "",
+    k.link || "",
   ].filter(Boolean).join("\n");
-  try { const c = JSON.parse(localStorage.getItem(newsKey)); if (c) { drawNews(c); newsBtn.textContent = "更新"; } } catch {}
+  // 選んだカテゴリの今日の結果があれば表示する
+  const showCached = () => {
+    catsEl.querySelectorAll("[data-cat]").forEach((b) => b.classList.toggle("on", b.dataset.cat === newsCat));
+    regionIn.hidden = newsCat !== "local";
+    newsEl.innerHTML = ""; newsBtn.textContent = "取得";
+    newsHint.textContent = `${NEWS_CATS[newsCat]}のニュースから話題を10個提案します。気になるものを押すとメモに追加されます。`;
+    try { const c = JSON.parse(localStorage.getItem(newsKeyOf())); if (c) { drawNews(c); newsBtn.textContent = "更新"; } } catch {}
+  };
+  catsEl.onclick = (e) => {
+    const b = e.target.closest("[data-cat]");
+    if (!b) return;
+    newsCat = b.dataset.cat;
+    try { localStorage.setItem("mtn.newscat", newsCat); } catch {}
+    showCached();
+  };
+  regionIn.onchange = () => { try { localStorage.setItem("mtn.region", regionIn.value.trim()); } catch {} showCached(); };
+  showCached();
   newsBtn.onclick = async () => {
     newsBtn.disabled = true;
     newsHint.textContent = "ニュースを読んでいます…";
     try {
-      const r = await store.callAI("news", {});
+      const r = await store.callAI("news", { category: newsCat, region: regionIn.value.trim() });
       drawNews(r.keywords);
-      try { localStorage.setItem(newsKey, JSON.stringify(r.keywords)); } catch {}
+      try { localStorage.setItem(newsKeyOf(), JSON.stringify(r.keywords)); } catch {}
       newsHint.textContent = `${r.count}本の見出しから選びました。押すとメモに追加されます。`;
       newsBtn.textContent = "更新";
     } catch (e) {

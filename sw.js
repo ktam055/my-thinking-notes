@@ -1,5 +1,5 @@
 // アプリ本体だけをキャッシュする（データは常にネットから取得）
-const CACHE = "mtn-v10";
+const CACHE = "mtn-v11";
 const ASSETS = ["./", "index.html", "css/style.css", "js/app.js", "js/store.js", "js/voice.js", "js/config.js", "manifest.webmanifest", "icons/icon.svg"];
 
 self.addEventListener("install", (e) => {

@@ -165,15 +165,22 @@ const STYLES = {
 };
 
 // ---------------- ニュース取得（RSS の見出しのみ使用） ----------------
-// 1つが取れなくても他で補えるよう複数を使う
-const NEWS_FEEDS = [
-  "https://www3.nhk.or.jp/rss/news/cat0.xml",
-  "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
-  "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
-  "https://news.yahoo.co.jp/rss/topics/domestic.xml",
-  "https://news.yahoo.co.jp/rss/topics/it.xml",
-  "https://news.yahoo.co.jp/rss/topics/entertainment.xml",
-];
+// カテゴリごとのニュース元。1つが取れなくても他で補えるよう複数を使う
+const yahoo = (t: string) => `https://news.yahoo.co.jp/rss/topics/${t}.xml`;
+const gsearch = (q: string) =>
+  `https://news.google.com/rss/search?q=${encodeURIComponent(q + " when:2d")}&hl=ja&gl=JP&ceid=JP:ja`;
+const NEWS_CATEGORIES: Record<string, string[]> = {
+  general: ["https://www3.nhk.or.jp/rss/news/cat0.xml", "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
+            yahoo("top-picks"), yahoo("domestic"), yahoo("world")],
+  it:      [yahoo("it"), gsearch("IT OR テクノロジー OR スマホ OR アプリ")],
+  ai:      [gsearch("生成AI OR 人工知能 OR ChatGPT OR Claude OR Gemini")],
+  science: [yahoo("science"), "https://www3.nhk.or.jp/rss/news/cat3.xml", gsearch("研究 OR 発見 OR 宇宙 OR 科学")],
+  ent:     [yahoo("entertainment"), gsearch("映画 OR ドラマ OR アニメ OR 音楽 OR 芸能")],
+  food:    [gsearch("グルメ OR 新メニュー OR 新商品 食品 OR スイーツ OR 飲食店")],
+  business:[yahoo("business"), gsearch("経済 OR 企業 OR 株価")],
+  sports:  [yahoo("sports")],
+  local:   [yahoo("local")],
+};
 
 const feedErrors: string[] = [];
 
@@ -186,22 +193,28 @@ async function fetchFeed(url: string): Promise<string> {
   return r.text();
 }
 
-async function fetchNewsTitles(): Promise<string[]> {
+interface NewsItem { title: string; link: string }
+async function fetchNews(category: string, region: string): Promise<NewsItem[]> {
   const since = Date.now() - 48 * 3600e3; // 昨日と今日
   feedErrors.length = 0;
-  const results = await Promise.allSettled(NEWS_FEEDS.map(fetchFeed));
-  const titles = new Set<string>();
+  const feeds = [...(NEWS_CATEGORIES[category] ?? NEWS_CATEGORIES.general)];
+  if (category === "local" && region) feeds.push(gsearch(region));
+  const results = await Promise.allSettled(feeds.map(fetchFeed));
+  const items = new Map<string, string>();
   for (const r of results) {
     if (r.status !== "fulfilled") { feedErrors.push(String((r.reason as Error)?.message ?? r.reason)); continue; }
     for (const item of r.value.match(/<item[\s\S]*?<\/item>/g) ?? []) {
       const t = item.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/)?.[1];
       const d = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1];
+      const l = item.match(/<link>(?:<!\[CDATA\[)?\s*([\s\S]*?)\s*(?:\]\]>)?<\/link>/)?.[1] ?? "";
       if (!t) continue;
       if (d && Date.parse(d) < since) continue;
-      titles.add(t.replace(/\s+-\s+[^-]+$/, "").replace(/&amp;/g, "&").trim()); // Google の「- 媒体名」を除く
+      const title = t.replace(/\s+-\s+[^-]+$/, "").replace(/&amp;/g, "&").trim(); // Google の「- 媒体名」を除く
+      const link = l.replace(/&amp;/g, "&");
+      if (!items.has(title)) items.set(title, /^https?:\/\//.test(link) ? link : "");
     }
   }
-  return [...titles].slice(0, 120);
+  return [...items.entries()].slice(0, 120).map(([title, link]) => ({ title, link }));
 }
 
 Deno.serve(async (req) => {
@@ -325,23 +338,30 @@ Deno.serve(async (req) => {
 
       // アイデア出し：昨日・今日のニュースから話題のキーワード10個
       case "news": {
-        const titles = await fetchNewsTitles();
+        const category = String(body.category ?? "general");
+        const region = String(body.region ?? "").trim().slice(0, 30);
+        const news = await fetchNews(category, region);
+        const titles = news.map((n, i) => `[${i}] ${n.title}`);
         if (!titles.length) {
           return json({ error: "ニュースを取得できませんでした（" + (feedErrors.join(", ") || "見出し0件") + "）" }, 502);
         }
         const system =
           "ニュースの見出し一覧から、いま話題になっているキーワードを10個選びます。" +
           "同じ話題は1つにまとめ、ジャンルが偏らないようにしてください。各キーワードに15文字以内の短い説明(note)、" +
-          "元になった代表的な見出し1つをそのまま(headline)、何が起きたかを見出しから分かる範囲で40〜80文字にまとめた概要(summary)を付けます。" +
+          "元になった代表的な見出しの番号(id: 数値)、何が起きたかを見出しから分かる範囲で40〜80文字にまとめた概要(summary)を付けます。" +
           "見出しに無い事実は付け足さないでください。" +
-          '出力はJSONのみ: {"keywords":[{"word":"…","note":"…","headline":"…","summary":"…"}, …]}';
+          '出力はJSONのみ: {"keywords":[{"word":"…","note":"…","id":0,"summary":"…"}, …]}';
         const { text } = await generate("light", system, titles.join("\n"), 4000);
         const o = parseJsonObject(text);
         const keywords = (Array.isArray(o.keywords) ? o.keywords : [])
-          .map((k: { word?: unknown; note?: unknown; headline?: unknown; summary?: unknown }) => ({
-            word: String(k?.word ?? "").trim(), note: String(k?.note ?? "").trim(),
-            headline: String(k?.headline ?? "").trim(), summary: String(k?.summary ?? "").trim(),
-          }))
+          .map((k: { word?: unknown; note?: unknown; id?: unknown; summary?: unknown }) => {
+            const src = news[Number(k?.id)];
+            return {
+              word: String(k?.word ?? "").trim(), note: String(k?.note ?? "").trim(),
+              summary: String(k?.summary ?? "").trim(),
+              headline: src?.title ?? "", link: src?.link ?? "",
+            };
+          })
           .filter((k: { word: string }) => k.word).slice(0, 10);
         return json({ keywords, count: titles.length });
       }

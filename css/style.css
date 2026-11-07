@@ -108,6 +108,7 @@ button:disabled { opacity: .5; cursor: default; }
 .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 20; display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
 .lightbox img { max-width: 96vw; max-height: 92vh; }
 .src-image { color: var(--accent); border-color: var(--accent); }
+.memo .body a { color: var(--accent); word-break: break-all; }
 .script-body { white-space: pre-wrap; word-break: break-word; margin-top: 8px; }
 details.card > summary { cursor: pointer; list-style: none; }
 details.card > summary::-webkit-details-marker { display: none; }
